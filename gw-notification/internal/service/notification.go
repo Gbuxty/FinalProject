@@ -16,6 +16,7 @@ type NotificationService struct {
 	consumer *kafka.Consumer
 	logger   logger.Logger
 	repo     SaveEvent
+	stop     chan struct{}
 }
 
 type SaveEvent interface {
@@ -27,21 +28,29 @@ func NewNotificationService(consumer *kafka.Consumer, logger logger.Logger, repo
 		consumer: consumer,
 		logger:   logger,
 		repo:     repo,
+		stop:     make(chan struct{}),
 	}
 }
 
 func (s *NotificationService) Start(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			s.logger.Infof("Notification service stopped")
-			return
-		case msg := <-s.consumer.MsgCh():
-			if err := s.processMessage(ctx, msg); err != nil {
-				s.logger.Errorf("Failed to process message: %v", err)
+	
+	go func() {
+		defer close(s.stop)
+		for {
+			select {
+			case <-ctx.Done():
+				s.logger.Infof("Notification service stopped")
+				return
+			case msg, ok := <-s.consumer.MsgCh():
+				if !ok {
+					return 
+				}
+				if err := s.processMessage(ctx, msg); err != nil {
+					s.logger.Errorf("Failed to process message: %v", err)
+				}
 			}
 		}
-	}
+	}()
 
 }
 
@@ -59,4 +68,10 @@ func (s *NotificationService) processMessage(ctx context.Context, msg *sarama.Co
 
 	s.logger.Infof("Message successfully saved:%v", event)
 	return nil
+}
+
+func (s *NotificationService) Shutdown() {
+	
+	<-s.stop
+	s.logger.Infof("Notification service shutdown complete")
 }
