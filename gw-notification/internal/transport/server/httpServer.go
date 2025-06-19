@@ -2,14 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"gw-notification/internal/config"
 	"gw-notification/pkg/logger"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 )
 
 type HttpServer struct {
@@ -30,21 +28,17 @@ func New(cfg *config.HTTPServer, logger logger.Logger) *HttpServer {
 	}
 }
 
-func (s *HttpServer) Start() error {
+func (s *HttpServer) Start()  {
 	s.logger.Infof("Server listening on port: %d", s.cfg.Port)
 
-	if err := s.server.ListenAndServe(); err != nil {
-		return err
-	}
-
-	return nil
+	go func() {
+		if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Errorf("failed start server :%v", err)
+		}
+	}()
 }
 
 func (s *HttpServer) Shutdown(ctx context.Context) error {
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
 	if err := s.server.Shutdown(ctx); err != nil {
 		return err
 	}
