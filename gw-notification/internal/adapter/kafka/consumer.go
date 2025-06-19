@@ -13,6 +13,8 @@ type Consumer struct {
 	topic  string
 	logger logger.Logger
 	msgCh  chan *sarama.ConsumerMessage
+	stop   chan struct{}
+	cancel context.CancelFunc
 }
 
 func NewKafkaConsumer(brokers []string, topic string, groupID string, logger logger.Logger) (*Consumer, error) {
@@ -32,24 +34,32 @@ func NewKafkaConsumer(brokers []string, topic string, groupID string, logger log
 		topic:  topic,
 		msgCh:  make(chan *sarama.ConsumerMessage),
 		logger: logger,
+		stop:   make(chan struct{}),
 	}, nil
 
 }
 
 func (c *Consumer) Start(ctx context.Context) {
-	for {
-		select {
+	ctx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
 
-		case <-ctx.Done():
-			return
-		default:
-			if err := c.group.Consume(ctx, []string{c.topic}, c); err != nil {
-				c.logger.Errorf("failed read from kafka comsume :%v", err)
+	go func() {
+		defer close(c.stop)
+		for {
+			select {
+
+			case <-ctx.Done():
+				return
+			default:
+				if err := c.group.Consume(ctx, []string{c.topic}, c); err != nil {
+					c.logger.Errorf("failed read from kafka comsume :%v", err)
+				}
+
 			}
 
 		}
+	}()
 
-	}
 }
 
 func (c *Consumer) Setup(_ sarama.ConsumerGroupSession) error {
@@ -74,9 +84,11 @@ func (c *Consumer) MsgCh() <-chan *sarama.ConsumerMessage {
 	return c.msgCh
 }
 
-func (c *Consumer) Close() error {
+func (c *Consumer) Shutdown() {
+	c.cancel()
+	<-c.stop
 	if err := c.group.Close(); err != nil {
-		return fmt.Errorf("failed close conn consumer group:%w", err)
+		c.logger.Errorf("Error during consumer close: %v", err)
 	}
-	return nil
+	close(c.msgCh)
 }
