@@ -10,6 +10,9 @@ import (
 	"gw-notification/internal/transport/server"
 	"gw-notification/pkg/client/mongo"
 	"gw-notification/pkg/logger"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -34,25 +37,35 @@ func Run() error {
 
 	dbMongo := mongoDB.NewEventRepository(client.Database(cfg.Mongo.DBName), cfg.Mongo.Collection)
 
+	wctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	consumer, err := kafka.NewKafkaConsumer(cfg.Kafka.Brokers, cfg.Kafka.Topic, cfg.Kafka.ConsumerGroup, logger)
 	if err != nil {
 		return fmt.Errorf("failed init kafka consumer:%w", err)
 	}
-	defer consumer.Close()
-
-	wctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	// вот эти 3 гоурутины не завершаются красиво ,нужно сделать что бы шатдаун был норм
 	svcNotifi := service.NewNotificationService(consumer, logger, dbMongo)
-	go svcNotifi.Start(wctx)
-
 	svr := server.New(cfg.Server, logger)
-	go svr.Start()
 
-	go consumer.Start(wctx)
+	svcNotifi.Start(wctx)
+	consumer.Start(wctx)
+	svr.Start()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	cancel()
+
+	svcNotifi.Shutdown()
+	consumer.Shutdown()
+
 	ctxShutdownServer, cancel := context.WithTimeout(context.Background(), cfg.Server.ServerShutDownTimeout)
 	defer cancel()
-	svr.Shutdown(ctxShutdownServer)
-
+	if err := svr.Shutdown(ctxShutdownServer); err != nil {
+		return err
+	}
+	
+	logger.Info("Shutdown complete")
 	return nil
 }
